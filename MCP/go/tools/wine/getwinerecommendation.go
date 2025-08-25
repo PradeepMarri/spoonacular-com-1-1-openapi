@@ -1,0 +1,94 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/spoonacular-api/mcp-server/config"
+	"github.com/spoonacular-api/mcp-server/models"
+	"github.com/mark3labs/mcp-go/mcp"
+)
+
+func GetwinerecommendationHandler(cfg *config.APIConfig) func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args, ok := request.Params.Arguments.(map[string]any)
+		if !ok {
+			return mcp.NewToolResultError("Invalid arguments object"), nil
+		}
+		queryParams := make([]string, 0)
+		if val, ok := args["wine"]; ok {
+			queryParams = append(queryParams, fmt.Sprintf("wine=%v", val))
+		}
+		if val, ok := args["maxPrice"]; ok {
+			queryParams = append(queryParams, fmt.Sprintf("maxPrice=%v", val))
+		}
+		if val, ok := args["minRating"]; ok {
+			queryParams = append(queryParams, fmt.Sprintf("minRating=%v", val))
+		}
+		if val, ok := args["number"]; ok {
+			queryParams = append(queryParams, fmt.Sprintf("number=%v", val))
+		}
+		queryString := ""
+		if len(queryParams) > 0 {
+			queryString = "?" + strings.Join(queryParams, "&")
+		}
+		url := fmt.Sprintf("%s/food/wine/recommendation%s", cfg.BaseURL, queryString)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("Failed to create request", err), nil
+		}
+		// Set authentication based on auth type
+		// Fallback to single auth parameter
+		if cfg.APIKey != "" {
+			req.Header.Set("x-api-key", cfg.APIKey)
+		}
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("Request failed", err), nil
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("Failed to read response body", err), nil
+		}
+
+		if resp.StatusCode >= 400 {
+			return mcp.NewToolResultError(fmt.Sprintf("API error: %s", body)), nil
+		}
+		// Use properly typed response
+		var result map[string]interface{}
+		if err := json.Unmarshal(body, &result); err != nil {
+			// Fallback to raw text if unmarshaling fails
+			return mcp.NewToolResultText(string(body)), nil
+		}
+
+		prettyJSON, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("Failed to format JSON", err), nil
+		}
+
+		return mcp.NewToolResultText(string(prettyJSON)), nil
+	}
+}
+
+func CreateGetwinerecommendationTool(cfg *config.APIConfig) models.Tool {
+	tool := mcp.NewTool("get_food_wine_recommendation",
+		mcp.WithDescription("Wine Recommendation"),
+		mcp.WithString("wine", mcp.Required(), mcp.Description("The type of wine to get a specific product recommendation for.")),
+		mcp.WithString("maxPrice", mcp.Description("The maximum price for the specific wine recommendation in USD.")),
+		mcp.WithString("minRating", mcp.Description("The minimum rating of the recommended wine between 0 and 1. For example, 0.8 equals 4 out of 5 stars.")),
+		mcp.WithString("number", mcp.Description("The number of wine recommendations expected (between 1 and 100).")),
+	)
+
+	return models.Tool{
+		Definition: tool,
+		Handler:    GetwinerecommendationHandler(cfg),
+	}
+}
